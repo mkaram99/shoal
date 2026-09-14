@@ -157,7 +157,7 @@
   <div><div class="k">Heading</div><div class="v" id="heading">000<b>°</b></div></div>
   <div><div class="k">Depth</div><div class="v" id="depth">0.0<b> m</b></div></div>
 </div>
-<p class="hint">Drag to look · W A S D swim · Q E sink/rise · click an image to glide to it<br><span>In VR</span> hold trigger to swim where you point · stick moves · grip next shape · A/X cruise</p>
+<p class="hint">Drag to look · W A S D swim · Q E sink/rise · 1–9 0 - = shapes · click an image to glide to it<br><span>In VR</span> hold trigger to swim where you point · stick moves · grip next shape · A/X cruise</p>
 
 <div class="lightbox" id="lb" role="dialog" aria-modal="true" aria-labelledby="lbTitle" hidden>
   <button type="button" class="btn" id="lbClose">Close</button>
@@ -318,7 +318,8 @@
     attribute vec3 aFrom; attribute vec3 aTo; attribute vec3 aNFrom; attribute vec3 aNTo;
     attribute vec4 aTile;  // x tile, y aspect, z seed, w size rand
     attribute float aIdx;
-    uniform float uMix, uStagger, uTime, uSize, uSizeVar, uDrift, uFacing, uWrapOn, uHi, uFogNear, uFogFar, uGrid, uInset, uPulse;
+    attribute vec2 aDim;   // tiled cell size in metres; 0 = free-floating image
+    uniform float uMix, uStagger, uTime, uSize, uSizeVar, uDrift, uFacing, uWrapOn, uHi, uFogNear, uFogFar, uGrid, uInset, uPulse, uGap;
     uniform vec3 uWrap, uCam;
     varying vec2 vUv, vLocal; varying float vFog, vNear, vHi;
     void main(){
@@ -327,18 +328,22 @@
       vec3 p = mix(aFrom, aTo, t);
       vec3 n = mix(aNFrom, aNTo, t); n = length(n) < 1e-3 ? vec3(0.0,0.0,1.0) : normalize(n);
       float s = aTile.z*6.2831853;
-      p += uDrift*vec3(sin(uTime*.31 + s*7.0), sin(uTime*.23 + s*11.0), cos(uTime*.27 + s*5.0))*.6;
+      // tiled photos ripple together along their normals, so neighbours never open cracks
+      if (aDim.x > 0.0) p += n*uDrift*.4*sin(uTime*.7 + dot(aTo, vec3(.14, .2, .12)));
+      else p += uDrift*vec3(sin(uTime*.31 + s*7.0), sin(uTime*.23 + s*11.0), cos(uTime*.27 + s*5.0))*.6;
       if (uWrapOn > .5) p = uCam + mod(p - uCam + .5*uWrap, uWrap) - .5*uWrap;
       float size = uSize*(1.0 + uSizeVar*(aTile.w*2.0 - 1.0)*.85)*(1.0 + uPulse*.35*sin(uTime*2.0 + s*3.0));
-      vec2 q = position.xy*vec2(size*sqrt(aTile.y), size/sqrt(aTile.y));
-      vec3 up = abs(n.y) > .95 ? vec3(0.0,0.0,-1.0) : vec3(0.0,1.0,0.0);
+      vec2 q = aDim.x > 0.0 ? position.xy*aDim*(1.0 - uGap) : position.xy*vec2(size*sqrt(aTile.y), size/sqrt(aTile.y));
+      vec3 up = abs(n.y) > .9995 ? vec3(0.0,0.0,-1.0) : vec3(0.0,1.0,0.0);
       vec3 rgt = normalize(cross(up, n)), up2 = cross(n, rgt);
       vec4 mvO = modelViewMatrix*vec4(p + rgt*q.x + up2*q.y, 1.0);
       vec4 mvB = modelViewMatrix*vec4(p, 1.0); mvB.xy += q;
-      vec4 mv = mix(mvB, mvO, uFacing);
+      vec4 mv = aDim.x > 0.0 ? mvO : mix(mvB, mvO, uFacing);
       float cell = floor(aTile.x + .5);
       vec2 cr = vec2(mod(cell, uGrid), floor(cell/uGrid));
-      vec2 lu = uv*(1.0 - 2.0*uInset) + uInset;
+      vec2 cuv = uv;   // tiled cells crop the photo to cover the cell
+      if (aDim.x > 0.0){ float ca = aDim.x/aDim.y; cuv = .5 + (uv - .5)*(aTile.y > ca ? vec2(ca/aTile.y, 1.0) : vec2(1.0, aTile.y/ca)); }
+      vec2 lu = cuv*(1.0 - 2.0*uInset) + uInset;
       vUv = vec2((cr.x + lu.x)/uGrid, 1.0 - (cr.y + 1.0 - lu.y)/uGrid);
       vLocal = uv;
       float d = -mv.z;
@@ -369,7 +374,7 @@
   const U = {
     uAtlas:{value:atlasTex}, uMix:{value:1}, uStagger:{value:.6}, uTime:{value:0}, uSize:{value:.7}, uSizeVar:{value:.3},
     uDrift:{value:.3}, uFacing:{value:0}, uWrapOn:{value:1}, uWrap:{value:new THREE.Vector3(100,100,100)}, uCam:{value:new THREE.Vector3()},
-    uHi:{value:-1}, uFogNear:{value:8}, uFogFar:{value:70}, uGrid:{value:GRID}, uInset:{value:GUTTER/CELL}, uPulse:{value:0},
+    uHi:{value:-1}, uFogNear:{value:8}, uFogFar:{value:70}, uGrid:{value:GRID}, uInset:{value:GUTTER/CELL}, uPulse:{value:0}, uGap:{value:0},
     uFogColor:{value:new THREE.Color(BG)}, uHiColor:{value:new THREE.Color('#C9A15B')}, uOpacity:{value:.8}, uBlend:{value:0}, uFrame:{value:0},
   };
   const material = new THREE.ShaderMaterial({uniforms:U, vertexShader:VERT, fragmentShader:FRAG, side:THREE.DoubleSide});
@@ -378,7 +383,7 @@
   const geo = new THREE.InstancedBufferGeometry();
   geo.index = base.index; geo.setAttribute('position', base.attributes.position); geo.setAttribute('uv', base.attributes.uv);
   const A = {};
-  for (const [name, size] of [['aFrom',3],['aTo',3],['aNFrom',3],['aNTo',3],['aTile',4],['aIdx',1]]){
+  for (const [name, size] of [['aFrom',3],['aTo',3],['aNFrom',3],['aNTo',3],['aTile',4],['aIdx',1],['aDim',2]]){
     A[name] = new THREE.InstancedBufferAttribute(new Float32Array(MAX*size), size);
     A[name].setUsage(THREE.DynamicDrawUsage);
     geo.setAttribute(name, A[name]);
@@ -418,16 +423,91 @@
 
   /* ================= parameters & geometry ================= */
   const P = {
-    count:2400, layout:'helix', seed:1,
-    spread:1, twist:0, jitter:0, facing:0, order:'random',
+    count:1000, layout:'cocoon', seed:1,
+    spread:1, twist:0, jitter:0, facing:0, order:'random', gap:0, shells:1,
     blend:'solid', opacity:.8, size:.7, sizeVar:.3, frame:0, fog:70,
-    cruise:1.2, drift:.3, driftSpeed:1, morph:1.8, stagger:.6, pulse:0, endless:true,
+    cruise:0, drift:.3, driftSpeed:1, morph:1.8, stagger:.6, pulse:0, endless:true,
   };
   const hash = (i, s) => { let h = Math.imul(i ^ 0x9E3779B9, 0x85EBCA6B) ^ Math.imul(s + 1, 0xC2B2AE35); h ^= h >>> 13; h = Math.imul(h, 0x27D4EB2F); h ^= h >>> 16; return (h >>> 0)/4294967296; };
   const GOLD = Math.PI*(3 - Math.sqrt(5));
 
   // each layout returns position + facing normal; axis says what Twist spins around
+  // Split `count` images into rows sized by rowLens, then give each image a width proportional to its
+  // aspect so every row closes exactly: a justified photo grid, wrapped onto a surface.
+  function justifyRows(start, count, rowLens, aspect){
+    const total = rowLens.reduce((t, v) => t + v, 0);
+    const counts = rowLens.map(l => Math.max(1, Math.floor(count*l/total)));
+    const order = rowLens.map((l, j) => j).sort((x, y) => rowLens[y] - rowLens[x]);
+    let used = counts.reduce((t, v) => t + v, 0), k = 0;
+    while (used < count){ counts[order[k++ % order.length]]++; used++; }
+    k = 0;
+    while (used > count && k < order.length*8){ const j = order[k++ % order.length]; if (counts[j] > 1){ counts[j]--; used--; } }
+    const rows = []; let idx = start;
+    counts.forEach((c, j) => {
+      let sum = 0; for (let m = 0; m < c; m++) sum += aspect(idx + m);
+      const items = []; let acc = 0;
+      for (let m = 0; m < c; m++){ const w = aspect(idx + m)/sum*rowLens[j]; items.push({i:idx + m, c:acc + w/2, w}); acc += w; }
+      rows.push(items); idx += c;
+    });
+    return rows;
+  }
+
   const LAYOUTS = {
+    cocoon:{label:'Cocoon', axis:'y', tiled:true, prepare(N, a, aspect){
+      const shells = clamp(Math.round(P.shells) || 1, 1, 8), R0 = 5*P.spread, cells = new Array(N);
+      const radii = [...Array(shells)].map((_, k) => R0*(1 + .5*k)), area = radii.reduce((t, R) => t + R*R, 0);
+      let start = 0;
+      radii.forEach((R, k) => {
+        const n = k === shells - 1 ? N - start : Math.round(N*R*R/area);
+        if (n <= 0) return;
+        const rows = clamp(Math.round(Math.PI/Math.sqrt(4*Math.PI/n)), 1, n), h = Math.PI/rows;
+        const lats = [...Array(rows)].map((_, j) => -Math.PI/2 + (j + .5)*h);
+        justifyRows(start, n, lats.map(q => 2*Math.PI*Math.cos(q)), aspect).forEach((items, j) => {
+          const cp = Math.cos(lats[j]), sp = Math.sin(lats[j]), off = hash(j, k*31 + P.seed)*2*Math.PI;
+          for (const it of items){
+            const th = off + it.c/cp, rr = R*(1 + (hash(it.i, 3) - .5)*.004), x = cp*Math.cos(th), z = cp*Math.sin(th);
+            cells[it.i] = [x*rr, sp*rr, z*rr, -x, -sp, -z, it.w*R*1.02, h*R*1.02];
+          }
+        });
+        start += n;
+      });
+      const Rmax = radii[radii.length - 1];
+      return {cells, pad:[2*Rmax, 2*Rmax, 2*Rmax]};
+    }, fn(i, N, a, r, o, c){ o.set(...c.cells[i]); }},
+    cyclorama:{label:'Cyclorama', axis:'y', tiled:true, prepare(N, a, aspect){
+      const R = 6*P.spread, H = 4*R, L = 2*Math.PI*R, cells = new Array(N);
+      const rows = clamp(Math.round(H/Math.sqrt(L*H/N)), 1, N), h = H/rows;
+      justifyRows(0, N, new Array(rows).fill(L), aspect).forEach((items, j) => {
+        const y = -H/2 + (j + .5)*h, off = hash(j, P.seed + 5)*L;
+        for (const it of items){
+          const th = (it.c + off)/R, c = Math.cos(th), sn = Math.sin(th);
+          cells[it.i] = [c*R, y, sn*R, -c, 0, -sn, it.w*1.02, h];
+        }
+      });
+      return {cells, pad:[2*R, h, 2*R]};
+    }, fn(i, N, a, r, o, c){ o.set(...c.cells[i]); }},
+    room:{label:'Room', axis:'y', tiled:true, prepare(N, a, aspect){
+      // E: each wall is tiled 15 cm past every corner, tucked behind the neighbouring wall
+      const S = 9*P.spread, E = S + .3, cells = new Array(N), faces = [[0,0,-1],[1,0,0],[0,0,1],[-1,0,0],[0,-1,0],[0,1,0]];
+      let start = 0;
+      faces.forEach((f, k) => {
+        const n = Math.floor(N/6) + (k < N % 6 ? 1 : 0); if (!n) return;
+        const nx = -f[0], ny = -f[1], nz = -f[2], up = Math.abs(ny) > .9995 ? [0,0,-1] : [0,1,0];
+        let rx = up[1]*nz - up[2]*ny, ry = up[2]*nx - up[0]*nz, rz = up[0]*ny - up[1]*nx;
+        const rl = Math.hypot(rx, ry, rz) || 1; rx /= rl; ry /= rl; rz /= rl;
+        const ux = ny*rz - nz*ry, uy = nz*rx - nx*rz, uz = nx*ry - ny*rx;
+        const rows = clamp(Math.round(Math.sqrt(n)), 1, n), h = E/rows;
+        justifyRows(start, n, new Array(rows).fill(E), aspect).forEach((items, j) => {
+          const y = E/2 - (j + .5)*h;
+          for (const it of items){
+            const x = -E/2 + it.c;
+            cells[it.i] = [f[0]*S/2 + rx*x + ux*y, f[1]*S/2 + ry*x + uy*y, f[2]*S/2 + rz*x + uz*y, nx, ny, nz, it.w, h];
+          }
+        });
+        start += n;
+      });
+      return {cells, pad:[S, S, S]};
+    }, fn(i, N, a, r, o, c){ o.set(...c.cells[i]); }},
     sphere:{label:'Sphere', axis:'y', fn(i,N,a,r,o){
       const R = Math.max(4, a*Math.sqrt(N/(4*Math.PI))), phi = Math.acos(1 - 2*(i + .5)/N), th = GOLD*i;
       const x = Math.sin(phi)*Math.cos(th), y = Math.cos(phi), z = Math.sin(phi)*Math.sin(th);
@@ -465,7 +545,7 @@
       o.set(c*rad, s*rad, -t*L, -c, -s, 0); }},
   };
 
-  const out = {x:0,y:0,z:0,nx:0,ny:0,nz:1, set(x,y,z,nx,ny,nz){ this.x=x; this.y=y; this.z=z; this.nx=nx; this.ny=ny; this.nz=nz; }};
+  const out = {x:0,y:0,z:0,nx:0,ny:0,nz:1,w:0,h:0, set(x,y,z,nx,ny,nz,w=0,h=0){ this.x=x; this.y=y; this.z=z; this.nx=nx; this.ny=ny; this.nz=nz; this.w=w; this.h=h; }};
   let N = 0;                // instances currently alive
   let morphStart = -1e9;
   const bbox = new THREE.Box3();
@@ -487,11 +567,14 @@
         NF[i*3+k] = NF[i*3+k] + (NT[i*3+k] - NF[i*3+k])*t;
       }
     }
+    assignTiles(newN);   // tiled layouts need each image's aspect before they can justify rows
+    const cache = def.prepare ? def.prepare(newN, a, i => TL[i*4 + 1] || 1) : null, DIM = A.aDim.array;
     bbox.makeEmpty();
     const v = new THREE.Vector3();
     for (let i = 0; i < newN; i++){
       TL[i*4 + 2] = hash(i, 7); TL[i*4 + 3] = hash(i, 11);
-      def.fn(i, newN, a, r, out);
+      def.fn(i, newN, a, r, out, cache);
+      DIM[i*2] = out.w; DIM[i*2 + 1] = out.h;
       let {x, y, z, nx, ny, nz} = out;
       if (P.jitter > 0){
         const j = P.jitter*a*1.6;
@@ -524,25 +607,39 @@
     if (opts.instant){ for (let i = 0; i < newN*3; i++){ F[i] = T[i]; NF[i] = NT[i]; } }
     N = newN; geo.instanceCount = N;
     const size = new THREE.Vector3(); bbox.getSize(size);
-    U.uWrap.value.set(Math.max(30, size.x + a*2), Math.max(30, size.y + a*2), Math.max(30, size.z + a*2));
-    assignTiles();
+    const pad = cache && cache.pad ? cache.pad : [a*2, a*2, a*2], minWrap = def.tiled ? 1 : 30;
+    U.uWrap.value.set(Math.max(minWrap, size.x + pad[0]), Math.max(minWrap, size.y + pad[1]), Math.max(minWrap, size.z + pad[2]));
+    A.aDim.needsUpdate = true;
     for (const k of ['aFrom','aTo','aNFrom','aNTo']) A[k].needsUpdate = true;
     U.uMix.value = opts.instant || reduce ? 1 : 0;
     morphStart = performance.now();
   }
 
   let bandOrder = [];
-  function assignTiles(){
-    const TL = A.aTile.array, n = tileCount;
+  function assignTiles(count = N){
+    const TL = A.aTile.array, n = Math.max(1, tileCount);
     if (P.order === 'bands' && bandOrder.length !== n){
       bandOrder = [...Array(n).keys()].sort((x, y) => (tiles[x].band - tiles[y].band) || (x - y));
     }
-    for (let i = 0; i < N; i++){
+    // "random" deals shuffled decks: every image repeats equally often and a copy never follows itself
+    let deck = null;
+    if (P.order === 'random'){
+      deck = new Int32Array(count);
+      const r = rng(P.seed*131 + 17), perm = [...Array(n).keys()];
+      let prev = -1;
+      for (let s0 = 0; s0 < count; s0 += n){
+        for (let k = n - 1; k > 0; k--){ const j = Math.floor(r()*(k + 1)); const t = perm[k]; perm[k] = perm[j]; perm[j] = t; }
+        if (n > 1 && perm[0] === prev){ const t = perm[0]; perm[0] = perm[n - 1]; perm[n - 1] = t; }
+        for (let k = 0; k < n && s0 + k < count; k++) deck[s0 + k] = perm[k];
+        prev = perm[n - 1];
+      }
+    }
+    for (let i = 0; i < count; i++){
       let t;
-      if (P.order === 'bands') t = bandOrder[Math.min(n - 1, Math.floor(i/N*n))];
+      if (deck) t = deck[i];
+      else if (P.order === 'bands') t = bandOrder[Math.min(n - 1, Math.floor(i/count*n))];
       else if (P.order === 'echo') t = Math.floor(hash(i, P.seed + 99)*Math.min(n, 6));
-      else if (P.order === 'sequence') t = i % n;
-      else t = Math.floor(hash(i, P.seed + 42)*n);
+      else t = i % n;
       TL[i*4] = t; TL[i*4 + 1] = tiles[t] ? tiles[t].aspect : 1;
     }
     A.aTile.needsUpdate = true;
@@ -550,10 +647,17 @@
 
   const tmpV = new THREE.Vector3();
   function instPos(i, target){
-    const F = A.aFrom.array, T = A.aTo.array, t = mixAt(i), s = A.aTile.array[i*4 + 2]*Math.PI*2, tm = U.uTime.value, d = U.uDrift.value*.6;
-    target.set(F[i*3] + (T[i*3] - F[i*3])*t + d*Math.sin(tm*.31 + s*7),
-               F[i*3+1] + (T[i*3+1] - F[i*3+1])*t + d*Math.sin(tm*.23 + s*11),
-               F[i*3+2] + (T[i*3+2] - F[i*3+2])*t + d*Math.cos(tm*.27 + s*5));
+    const F = A.aFrom.array, T = A.aTo.array, t = mixAt(i), s = A.aTile.array[i*4 + 2]*Math.PI*2, tm = U.uTime.value, dr = U.uDrift.value;
+    target.set(F[i*3] + (T[i*3] - F[i*3])*t, F[i*3+1] + (T[i*3+1] - F[i*3+1])*t, F[i*3+2] + (T[i*3+2] - F[i*3+2])*t);
+    if (A.aDim.array[i*2] > 0){
+      const NF = A.aNFrom.array, NT = A.aNTo.array, w = dr*.4*Math.sin(tm*.7 + T[i*3]*.14 + T[i*3+1]*.2 + T[i*3+2]*.12);
+      target.x += (NF[i*3] + (NT[i*3] - NF[i*3])*t)*w;
+      target.y += (NF[i*3+1] + (NT[i*3+1] - NF[i*3+1])*t)*w;
+      target.z += (NF[i*3+2] + (NT[i*3+2] - NF[i*3+2])*t)*w;
+    } else {
+      const d = dr*.6;
+      target.x += d*Math.sin(tm*.31 + s*7); target.y += d*Math.sin(tm*.23 + s*11); target.z += d*Math.cos(tm*.27 + s*5);
+    }
     if (U.uWrapOn.value > .5){
       const w = U.uWrap.value, c = U.uCam.value;
       target.x = c.x + mod(target.x - c.x + w.x/2, w.x) - w.x/2;
@@ -563,7 +667,8 @@
     return target;
   }
   function mod(n, m){ return ((n % m) + m) % m; }
-  const instSize = i => U.uSize.value*(1 + U.uSizeVar.value*(A.aTile.array[i*4 + 3]*2 - 1)*.85);
+  const instSize = i => A.aDim.array[i*2] > 0 ? Math.max(A.aDim.array[i*2], A.aDim.array[i*2 + 1])
+    : U.uSize.value*(1 + U.uSizeVar.value*(A.aTile.array[i*4 + 3]*2 - 1)*.85);
 
   const camWorld = new THREE.Vector3(), ndcV = new THREE.Vector3();
   function pickScreen(clientX, clientY){
@@ -647,7 +752,8 @@
       const avg = averageHue(u.canvas);
       tiles[i] = {title:u.title, aspect:u.canvas.width/u.canvas.height, band:avg, user:true, source:u.canvas};
     });
-    atlasTex.needsUpdate = true; assignTiles();
+    atlasTex.needsUpdate = true;
+    if (LAYOUTS[P.layout].tiled) rebuild(); else assignTiles();
     $('restore').hidden = false; $('countTiles').textContent = `${tileCount} of yours`;
     const extra = files.length - take.length;
     toast(`${userSources.length} photo${userSources.length > 1 ? 's' : ''} in the shoal` + (failed ? ` · ${failed} unreadable` : '') + (extra > 0 ? ` · ${extra} over the ${TILES} limit` : ''));
@@ -662,11 +768,14 @@
 
   /* ================= panel ================= */
   const pct = v => Math.round(v*100) + '%';
+  const KEYCAPS = ['1','2','3','4','5','6','7','8','9','0','-','='];
   const GROUPS = [
     {title:'Placement', items:[
       {key:'spread', label:'Spread', min:.4, max:3, step:.01, fmt:v => v.toFixed(2) + '×', rebuild:true},
       {key:'twist', label:'Twist', min:-2, max:2, step:.01, fmt:v => (v > 0 ? '+' : '') + v.toFixed(2) + ' turns', rebuild:true},
       {key:'jitter', label:'Scatter', min:0, max:1, step:.01, fmt:pct, rebuild:true},
+      {key:'gap', label:'Gap', min:0, max:.5, step:.01, fmt:v => v < .005 ? 'touching' : pct(v), uniform:'uGap'},
+      {key:'shells', label:'Shells', min:1, max:6, step:1, fmt:v => v === 1 ? '1 layer' : v + ' layers', rebuild:true},
       {key:'facing', label:'Facing', min:0, max:1, step:.01, fmt:v => v < .02 ? 'toward you' : v > .98 ? 'along the shape' : pct(v) + ' shape', uniform:'uFacing'},
       {key:'order', label:'Order', chips:[['random','Random'],['bands','Colour bands'],['sequence','Sequence'],['echo','Echo']], apply:() => assignTiles()},
     ]},
@@ -735,7 +844,7 @@
     // geometry buttons with a tiny plot of each shape
     const lay = $('layouts');
     Object.entries(LAYOUTS).forEach(([key, def], idx) => {
-      const b = document.createElement('button'); b.type = 'button'; b.dataset.layout = key; b.title = `${def.label} (key ${idx + 1})`;
+      const b = document.createElement('button'); b.type = 'button'; b.dataset.layout = key; b.title = `${def.label} (key ${KEYCAPS[idx]})`;
       const cv = document.createElement('canvas'); cv.width = 80; cv.height = 56;
       b.append(cv, document.createTextNode(def.label));
       b.addEventListener('click', () => setLayout(key));
@@ -748,7 +857,8 @@
   function drawGlyph(cv, def){
     const g = cv.getContext('2d'), r = rng(5), pts = [], n = 150;
     const saveSpread = P.spread; P.spread = 1;
-    for (let i = 0; i < n; i++){ def.fn(i, n, 1.3, r, out); pts.push([out.x + out.z*.45, -out.y - out.z*.18]); }
+    const cache = def.prepare ? def.prepare(n, 1.3, () => 1.2) : null;
+    for (let i = 0; i < n; i++){ def.fn(i, n, 1.3, r, out, cache); pts.push([out.x + out.z*.45, -out.y - out.z*.18]); }
     P.spread = saveSpread;
     let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
     for (const [x, y] of pts){ x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
@@ -761,7 +871,13 @@
     $('countRead').innerHTML = P.count.toLocaleString('en-US') + '<small>images</small>';
     const c = $('count'); c.value = countToSlider(P.count); setFill(c);
   }
-  function syncDisabled(){ controls.opacity.wrap.classList.toggle('disabled', P.blend === 'solid'); }
+  function syncDisabled(){
+    const tiled = !!LAYOUTS[P.layout].tiled;
+    controls.opacity.wrap.classList.toggle('disabled', P.blend === 'solid');
+    for (const k of ['size', 'sizeVar', 'pulse', 'facing']) controls[k].wrap.classList.toggle('disabled', tiled);
+    controls.gap.wrap.classList.toggle('disabled', !tiled);
+    controls.shells.wrap.classList.toggle('disabled', P.layout !== 'cocoon');
+  }
   function syncAll(){
     for (const key in controls){
       const {it, wrap} = controls[key];
@@ -777,7 +893,7 @@
   function setLayout(key){
     P.layout = key;
     document.querySelectorAll('[data-layout]').forEach(b => b.setAttribute('aria-pressed', b.dataset.layout === key));
-    rebuild(); save();
+    syncDisabled(); rebuild(); save();
   }
   function save(){ try { localStorage.setItem('shoal.params', JSON.stringify(P)); } catch (e) {} }
   function load(){
@@ -1012,7 +1128,7 @@
     const k = e.key.toLowerCase();
     if (['w','a','s','d','q','e','arrowup','arrowdown','arrowleft','arrowright','shift'].includes(k)){ keys.add(k); if (k.startsWith('arrow')) e.preventDefault(); return; }
     if (k === ' '){ toggleCruise(); e.preventDefault(); }
-    else if (k >= '1' && k <= '9'){ setLayout(LAYOUT_KEYS[+k - 1]); }
+    else if (KEYCAPS.includes(k) && LAYOUT_KEYS[KEYCAPS.indexOf(k)]){ setLayout(LAYOUT_KEYS[KEYCAPS.indexOf(k)]); }
     else if (k === 'h') goHome();
     else if (k === 'r') shuffle();
     else if (k === 'escape'){ glide = null; U.uHi.value = -1; }
