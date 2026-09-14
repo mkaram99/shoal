@@ -1232,14 +1232,34 @@
     }
   }
   let vrSupported = false;
+  const inQuestBrowser = /OculusBrowser/i.test(navigator.userAgent);
+  const noHeadsetMessage = () => inQuestBrowser
+    ? 'VR isn’t available right now. Reload the page, then press Enter VR again.'
+    : 'No headset found. Put on your Quest, turn on Quest Link (Quick Settings → Quest Link), then press Enter VR again.';
+  // Ask the browser whether a VR headset is available. On a PC this can change after the page loads,
+  // for example when Quest Link is turned on later, so it runs again on click and when devices change.
+  function checkVR(){
+    if (!navigator.xr || !navigator.xr.isSessionSupported) return Promise.resolve(false);
+    return navigator.xr.isSessionSupported('immersive-vr')
+      .then(ok => { vrSupported = ok; vrBtn.classList.toggle('unsupported', !ok); return ok; })
+      .catch(() => { vrSupported = false; vrBtn.classList.add('unsupported'); return false; });
+  }
   async function toggleVR(){
     const s = renderer.xr.getSession();
     if (s){ s.end(); return; }
-    if (!navigator.xr || !vrSupported){ toast('No VR headset found. On a Meta Quest, open this page in the Quest Browser, then press Enter VR.', 6000); return; }
+    if (!navigator.xr){
+      toast(inQuestBrowser ? noHeadsetMessage() : 'This browser can’t show VR. Open Shoal with Shoal.exe, Microsoft Edge or Google Chrome.', 7000);
+      return;
+    }
+    if (!vrSupported) await checkVR();
     try {
       const session = await navigator.xr.requestSession('immersive-vr', {optionalFeatures:['local-floor','bounded-floor','hand-tracking']});
       await renderer.xr.setSession(session);
-    } catch (e){ toast('The headset didn’t start VR here. Open this page on its own in the Quest Browser (not inside another page) and try again.', 7000); }
+    } catch (e){
+      toast(vrSupported
+        ? (inQuestBrowser ? 'The headset didn’t start VR. Reload the page and try again.' : 'The headset didn’t start VR. Check Quest Link is on in the headset, then press Enter VR again.')
+        : noHeadsetMessage(), 7000);
+    }
   }
   renderer.xr.addEventListener('sessionstart', () => {
     vrBtn.textContent = 'Exit VR'; rig.position.y -= 1.6;
@@ -1253,7 +1273,7 @@
   });
   vrBtn.addEventListener('click', toggleVR);
   if (navigator.xr && navigator.xr.isSessionSupported){
-    navigator.xr.isSessionSupported('immersive-vr').then(ok => { vrSupported = ok; vrBtn.classList.toggle('unsupported', !ok); }).catch(() => vrBtn.classList.add('unsupported'));
+    checkVR(); navigator.xr.addEventListener('devicechange', checkVR);
   } else vrBtn.classList.add('unsupported');
 
   /* ---------- membrane: resistance, break-through pop, haptics ---------- */
