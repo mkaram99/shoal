@@ -342,7 +342,9 @@
     uniform float uMix, uStagger, uTime, uSize, uSizeVar, uDrift, uFacing, uWrapOn, uHi, uFogNear, uFogFar, uGrid, uInset, uPulse, uGap;
     uniform vec3 uWrap, uCam, uPopPos;
     uniform float uMem, uMemR, uPopAmp, uPopT, uClock;
-    varying vec2 vUv, vLocal; varying float vFog, vNear, vHi, vStretch, vRipple, vPage;
+    uniform float uHDTile[16];
+    uniform float uHDTime[16];
+    varying vec2 vUv, vLocal, vUvHD; varying float vFog, vNear, vHi, vStretch, vRipple, vPage, vHD, vHDMix;
     void main(){
       float t = clamp(uMix*(1.0 + uStagger) - aTile.z*uStagger, 0.0, 1.0);
       t = t*t*(3.0 - 2.0*t);
@@ -379,7 +381,7 @@
         vRipple = env*uPopAmp*max(0.0, sin(x*5.0));
       }
       vec4 mv = modelViewMatrix*vec4(wp, 1.0);
-      float cell = floor(aTile.x + .5);
+      float cell = floor(aTile.x + .5), tileId = cell;
       vPage = floor(cell/(uGrid*uGrid));          // which atlas page holds this photo
       cell -= vPage*uGrid*uGrid;
       vec2 cr = vec2(mod(cell, uGrid), floor(cell/uGrid));
@@ -387,6 +389,13 @@
       if (aDim.x > 0.0){ float ca = aDim.x/aDim.y; cuv = .5 + (uv - .5)*(aTile.y > ca ? vec2(ca/aTile.y, 1.0) : vec2(1.0, aTile.y/ca)); }
       vec2 lu = cuv*(1.0 - 2.0*uInset) + uInset;
       vUv = vec2((cr.x + lu.x)/uGrid, 1.0 - (cr.y + 1.0 - lu.y)/uGrid);
+      // sharp close-up: is this photo loaded into one of the 16 detail slots?
+      vHD = -1.0; vHDMix = 0.0;
+      for (int k = 0; k < 16; k++){
+        if (abs(uHDTile[k] - tileId) < .5){ vHD = float(k); vHDMix = clamp((uClock - uHDTime[k])/.35, 0.0, 1.0); }
+      }
+      vec2 hr = vec2(mod(max(vHD, 0.0), 4.0), floor(max(vHD, 0.0)/4.0));
+      vUvHD = vec2((hr.x + lu.x)/4.0, 1.0 - (hr.y + 1.0 - lu.y)/4.0);
       vLocal = uv;
       float d = -mv.z;
       vFog = smoothstep(uFogNear, uFogFar, d);
@@ -395,12 +404,13 @@
       gl_Position = projectionMatrix*mv;
     }`;
   const FRAG = `
-    uniform sampler2D uAtlas0, uAtlas1, uAtlas2, uAtlas3; uniform vec3 uFogColor, uHiColor; uniform float uOpacity, uBlend, uFrame;
-    varying vec2 vUv, vLocal; varying float vFog, vNear, vHi, vStretch, vRipple, vPage;
+    uniform sampler2D uAtlas0, uAtlas1, uAtlas2, uAtlas3, uDetail; uniform vec3 uFogColor, uHiColor; uniform float uOpacity, uBlend, uFrame;
+    varying vec2 vUv, vLocal, vUvHD; varying float vFog, vNear, vHi, vStretch, vRipple, vPage, vHD, vHDMix;
     void main(){
       float pg = floor(vPage + .5);
       vec3 c = pg < .5 ? texture2D(uAtlas0, vUv).rgb : pg < 1.5 ? texture2D(uAtlas1, vUv).rgb
              : pg < 2.5 ? texture2D(uAtlas2, vUv).rgb : texture2D(uAtlas3, vUv).rgb;
+      if (vHD > -.5) c = mix(c, texture2D(uDetail, vUvHD).rgb, vHDMix);   // fade in the sharp copy
       float e = min(min(vLocal.x, 1.0 - vLocal.x), min(vLocal.y, 1.0 - vLocal.y));
       if (vHi > .5 && e < .025) c = uHiColor;
       else if (uFrame > 0.0 && e < .012*uFrame) c = mix(c, vec3(0.9,0.88,0.82), .85);
@@ -420,7 +430,8 @@
     }`;
 
   const U = {
-    uAtlas0:{value:pages[0].tex}, uAtlas1:{value:pages[0].tex}, uAtlas2:{value:pages[0].tex}, uAtlas3:{value:pages[0].tex}, uMix:{value:1}, uStagger:{value:.6}, uTime:{value:0}, uSize:{value:.7}, uSizeVar:{value:.3},
+    uAtlas0:{value:pages[0].tex}, uAtlas1:{value:pages[0].tex}, uAtlas2:{value:pages[0].tex}, uAtlas3:{value:pages[0].tex}, uDetail:{value:pages[0].tex},
+    uHDTile:{value:new Array(16).fill(-1)}, uHDTime:{value:new Array(16).fill(0)}, uMix:{value:1}, uStagger:{value:.6}, uTime:{value:0}, uSize:{value:.7}, uSizeVar:{value:.3},
     uDrift:{value:.3}, uFacing:{value:0}, uWrapOn:{value:1}, uWrap:{value:new THREE.Vector3(100,100,100)}, uCam:{value:new THREE.Vector3()},
     uHi:{value:-1}, uFogNear:{value:8}, uFogFar:{value:70}, uGrid:{value:GRID}, uInset:{value:GUTTER/CELL}, uPulse:{value:0}, uGap:{value:0},
     uMem:{value:.9}, uMemR:{value:3.1}, uPopAmp:{value:0}, uPopT:{value:-99}, uClock:{value:0}, uPopPos:{value:new THREE.Vector3()},
@@ -531,7 +542,7 @@
   /* ================= parameters & geometry ================= */
   const P = {
     count:1000, layout:'cocoon', seed:1,
-    spread:1, twist:0, jitter:0, facing:0, order:'random', gap:0, shells:1, membrane:.9,
+    spread:1, twist:0, jitter:0, facing:0, order:'random', gap:0, shells:1, membrane:.9, sharp:true,
     blend:'solid', opacity:.8, size:.7, sizeVar:.3, frame:0, fog:70,
     cruise:0, drift:.3, driftSpeed:1, morph:1.8, stagger:.6, pulse:0, endless:true,
   };
@@ -815,7 +826,7 @@
   /* ================= tiles: samples & your photos ================= */
   let usingSamples = true, paintJob = 0, busy = false;
   function paintSamples(){
-    const job = ++paintJob; usingSamples = true; tileCount = TILES; bandOrder = [];
+    const job = ++paintJob; usingSamples = true; tileCount = TILES; bandOrder = []; hdReset();
     releasePages(1);
     for (let i = 0; i < TILES; i++){ const info = tileInfo(i + 1); tiles[i] = {title:info.title, aspect:info.aspect, band:PAL.indexOf(info.pal), seed:i + 1, user:false}; }
     tiles.length = TILES;
@@ -883,7 +894,7 @@
     putTile(i, drawable);
     tiles[i] = meta; tileCount = i + 1; tiles.length = tileCount;
   }
-  function startUserLibrary(){ paintJob++; usingSamples = false; tileCount = 0; tiles.length = 0; releasePages(1); }
+  function startUserLibrary(){ paintJob++; usingSamples = false; tileCount = 0; tiles.length = 0; releasePages(1); hdReset(); }
   function syncLibraryUI(){
     $('countTiles').textContent = usingSamples ? `${TILES} samples` : `${tileCount.toLocaleString('en-US')} of yours`;
     $('clear').hidden = usingSamples;
@@ -1003,6 +1014,7 @@
       {key:'membrane', label:'Membrane', min:0, max:1.5, step:.01, fmt:v => v < .01 ? 'off' : v.toFixed(2) + ' m',
         apply:() => { U.uMem.value = P.membrane; U.uMemR.value = Math.max(2*P.membrane, P.membrane + 2.2); }},
       {key:'frame', label:'Paper border', min:0, max:3, step:.01, fmt:v => v < .01 ? 'none' : v.toFixed(1), uniform:'uFrame'},
+      {key:'sharp', label:'Sharp close-ups', toggle:true, note:'Swap in full-detail copies of the photos nearest you', apply:() => { if (!P.sharp) hdReset(); }},
       {key:'fog', label:'Visibility', min:15, max:400, step:1, fmt:v => Math.round(v) + ' m', apply:() => { U.uFogFar.value = P.fog; U.uFogNear.value = P.fog*.12; }},
     ]},
     {title:'Motion', items:[
@@ -1276,6 +1288,92 @@
     memWasIn = inside;
   }
 
+  /* ---------- sharp close-ups: full-detail copies of the photos nearest you ---------- */
+  // A 4096 px detail atlas holds 16 slots of 1,024 px. A few times a second the photos filling the most of your
+  // view get a slot; each is copied into the GPU texture on its own (no full re-upload) and the shader fades it in.
+  const HD_SLOTS = 16, HD_GRID = 4, HD_SIZE = ATLAS/HD_GRID, HD_GUT = Math.round(GUTTER*HD_SIZE/CELL), HD_MIN_ANGLE = .13;
+  const hd = {tex:null, canvas:null, ctx:null, srcTex:null, slotTile:new Array(HD_SLOTS).fill(-1), lastUse:new Array(HD_SLOTS).fill(0), loading:false, gen:0};
+  const hdPos = new THREE.Vector2(), hdScore = new Map();
+  let hdLast = 0;
+  function hdReset(){
+    hd.gen++; hd.loading = false;
+    hd.slotTile.fill(-1); hd.lastUse.fill(0);
+    for (let k = 0; k < HD_SLOTS; k++) U.uHDTile.value[k] = -1;
+  }
+  function hdEnsureAtlas(){
+    if (hd.tex) return;
+    const c = document.createElement('canvas'); c.width = c.height = ATLAS;
+    const g = c.getContext('2d'); g.fillStyle = BG; g.fillRect(0, 0, ATLAS, ATLAS);
+    hd.tex = new THREE.CanvasTexture(c); hd.tex.anisotropy = ANISO; hd.tex.minFilter = THREE.LinearMipmapLinearFilter;
+    U.uDetail.value = hd.tex;
+    hd.canvas = document.createElement('canvas'); hd.canvas.width = hd.canvas.height = HD_SIZE;
+    hd.ctx = hd.canvas.getContext('2d');
+    hd.srcTex = new THREE.Texture(hd.canvas);
+  }
+  async function hdSource(tile){
+    if (!tile) return null;
+    const L = HD_SIZE - 2*HD_GUT;
+    if (!tile.user){
+      const a = tile.aspect;
+      return paintTile(tile.seed, a >= 1 ? L : Math.round(L*a), a >= 1 ? Math.round(L/a) : L);
+    }
+    let blob = tile.full;
+    if (!blob && tile.id != null){ const rec = await LIB.get(tile.id); blob = rec && rec.full; }
+    return blob ? decode(blob) : null;
+  }
+  async function hdLoad(t, slot){
+    const tile = tiles[t], gen = hd.gen;
+    if (!tile) return;
+    hd.loading = true;
+    try {
+      const src = await hdSource(tile);
+      if (!src || gen !== hd.gen) return;
+      hdEnsureAtlas();
+      const g = hd.ctx;
+      g.fillStyle = BG; g.fillRect(0, 0, HD_SIZE, HD_SIZE);
+      g.imageSmoothingQuality = 'high';
+      g.drawImage(src, HD_GUT, HD_GUT, HD_SIZE - 2*HD_GUT, HD_SIZE - 2*HD_GUT);
+      if (src.close) src.close();
+      const row = Math.floor(slot/HD_GRID), col = slot % HD_GRID;
+      renderer.copyTextureToTexture(hdPos.set(col*HD_SIZE, ATLAS - (row + 1)*HD_SIZE), hd.srcTex, hd.tex);
+      hd.slotTile[slot] = t; hd.lastUse[slot] = performance.now();
+      U.uHDTile.value[slot] = t; U.uHDTime.value[slot] = U.uClock.value;
+    } catch (e) {
+      hd.lastError = String((e && e.message) || e);   // no sharp copy this time: the swarm tile keeps showing
+    } finally {
+      if (gen === hd.gen) hd.loading = false;
+    }
+  }
+  function hdTick(now){
+    if (!P.sharp || !N || now - hdLast < 250) return;
+    hdLast = now;
+    hdScore.clear();
+    for (let i = 0; i < N; i++){
+      instPos(i, tmpV);
+      const dx = tmpV.x - headPos.x, dy = tmpV.y - headPos.y, dz = tmpV.z - headPos.z, sz = instSize(i), reach = sz/HD_MIN_ANGLE;
+      const d2 = dx*dx + dy*dy + dz*dz;
+      if (d2 > reach*reach) continue;                                  // too far away to look soft
+      const d = Math.sqrt(d2) + 1e-3;
+      if ((dx*fwd.x + dy*fwd.y + dz*fwd.z)/d < .2) continue;           // behind you or far off to the side
+      const t = A.aTile.array[i*4] | 0, score = sz/d;
+      if (score > (hdScore.get(t) || 0)) hdScore.set(t, score);
+    }
+    const wanted = [...hdScore.entries()].sort((a, b) => b[1] - a[1]).slice(0, HD_SLOTS).map(e => e[0]);
+    const wantedSet = new Set(wanted);
+    for (let k = 0; k < HD_SLOTS; k++) if (wantedSet.has(hd.slotTile[k])) hd.lastUse[k] = now;
+    if (hd.loading) return;
+    const missing = wanted.find(t => !hd.slotTile.includes(t));
+    if (missing === undefined) return;
+    let slot = hd.slotTile.indexOf(-1);
+    if (slot < 0){
+      for (let k = 0; k < HD_SLOTS; k++){
+        if (wantedSet.has(hd.slotTile[k])) continue;
+        if (slot < 0 || hd.lastUse[k] < hd.lastUse[slot]) slot = k;
+      }
+    }
+    if (slot >= 0) hdLoad(missing, slot);
+  }
+
   /* ---------- frame loop ---------- */
   let last = performance.now(), lastHud = 0, xrPick = 0;
   const odoEl = $('odo'), headEl = $('heading'), depthEl = $('depth');
@@ -1322,6 +1420,7 @@
     odometer += vel.length()*dt;
     camera.getWorldPosition(headPos); U.uCam.value.copy(headPos);
     membraneTick(dt, xr);
+    hdTick(now);
 
     if (xr){
       const c = ctrls[xrPick++ % 2];
