@@ -63,7 +63,8 @@ static class ShoalLauncher
 
             // A profile of its own keeps Shoal's saved photos and settings apart from normal browsing.
             string profile = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Shoal", "Browser");
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Shoal",
+                Path.GetFileNameWithoutExtension(browser).ToLowerInvariant() == "chrome" ? "Chrome" : "Browser");   // Chrome and Edge profiles are not interchangeable
             Directory.CreateDirectory(profile);
 
             // A Shoal window that is already open would ignore the runtime choice below, so restart it.
@@ -315,10 +316,12 @@ static class ShoalLauncher
         string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         string[] candidates =
         {
-            @"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-            @"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+            // Chrome first: on this laptop it is set to the NVIDIA GPU that drives the headset
+            // (Windows Settings > Display > Graphics). A browser on the other GPU can't start VR.
             @"C:\Program Files\Google\Chrome\Application\chrome.exe",
             Path.Combine(local, @"Google\Chrome\Application\chrome.exe"),
+            @"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            @"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
         };
         foreach (string path in candidates)
         {
