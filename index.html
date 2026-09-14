@@ -159,7 +159,7 @@
   <div><div class="k">Heading</div><div class="v" id="heading">000<b>°</b></div></div>
   <div><div class="k">Depth</div><div class="v" id="depth">0.0<b> m</b></div></div>
 </div>
-<p class="hint">Drag to look · W A S D swim · Q E sink/rise · 1–9 0 - = shapes · click an image to glide to it<br><span>In VR</span> hold trigger to swim where you point · stick moves · grip next shape · A/X cruise</p>
+<p class="hint">Drag to look · W A S D swim · Q E sink/rise · V enter VR · 1–9 0 - = shapes · click an image to glide to it<br><span>In VR</span> hold trigger to swim where you point · stick moves · grip next shape · A/X cruise</p>
 
 <div class="lightbox" id="lb" role="dialog" aria-modal="true" aria-labelledby="lbTitle" hidden>
   <button type="button" class="btn" id="lbClose">Close</button>
@@ -1263,11 +1263,13 @@
   }
   renderer.xr.addEventListener('sessionstart', () => {
     vrBtn.textContent = 'Exit VR'; rig.position.y -= 1.6;
+    document.title = 'Shoal · in VR';   // the PC launcher watches the title to know VR has started
     rig.rotation.y = look.yaw*DEG; look.pitch = 0;
     try { renderer.xr.setFoveation(1); } catch (e) {}
   });
   renderer.xr.addEventListener('sessionend', () => {
     vrBtn.textContent = 'Enter VR'; rig.position.y += 1.6;
+    document.title = 'Shoal';
     look.yaw = rig.rotation.y/DEG; rig.rotation.y = 0;
     camera.position.set(0,0,0); onResize();
   });
@@ -1516,6 +1518,7 @@
     if (['w','a','s','d','q','e','arrowup','arrowdown','arrowleft','arrowright','shift'].includes(k)){ keys.add(k); if (k.startsWith('arrow')) e.preventDefault(); return; }
     if (k === ' '){ toggleCruise(); e.preventDefault(); }
     else if (KEYCAPS.includes(k) && LAYOUT_KEYS[KEYCAPS.indexOf(k)]){ setLayout(LAYOUT_KEYS[KEYCAPS.indexOf(k)]); }
+    else if (k === 'v'){ if (!e.repeat) toggleVR(); }
     else if (k === 'h') goHome();
     else if (k === 'r') shuffle();
     else if (k === 'escape'){ glide = null; U.uHi.value = -1; }
