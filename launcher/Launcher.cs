@@ -3,6 +3,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Management;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
@@ -15,7 +16,8 @@ using Microsoft.Win32;
 static class ShoalLauncher
 {
     const string AppUrl = "https://mkaram99.github.io/shoal/";
-    const string LinkClient = @"C:\Program Files\Oculus\Support\oculus-client\OculusClient.exe";
+    const string LinkClient = @"C:\Program Files\Oculus\Support\oculus-client\Client.exe";
+    const string MetaRuntime = @"C:\Program Files\Oculus\Support\oculus-runtime\oculus_openxr_64.json";
     const string Title = "Shoal";
 
     [STAThread]
@@ -24,18 +26,19 @@ static class ShoalLauncher
         Application.EnableVisualStyles();
         try
         {
+            // Shoal always uses Meta Quest Link. If another runtime (e.g. Virtual Desktop) is the PC's default,
+            // point only Shoal's own browser window at Link through XR_RUNTIME_JSON; the PC-wide setting is untouched.
             string runtime = ActiveOpenXrRuntime();
-            if (!IsMetaRuntime(runtime))
+            bool linkInstalled = File.Exists(MetaRuntime);
+            if (!IsMetaRuntime(runtime) && !linkInstalled)
             {
-                string current = runtime == null ? "none" : FriendlyRuntimeName(runtime);
                 DialogResult answer = MessageBox.Show(
-                    "Shoal sends VR to your headset through Meta Quest Link, but this PC's VR runtime is set to " + current + ".\n\n" +
-                    "To switch it (one time): open the Meta Quest Link app, go to Settings → General, and next to " +
-                    "\"OpenXR Runtime\" click \"Set Meta Quest Link as active\".\n\n" +
-                    "Open Shoal anyway?",
+                    "Shoal sends VR to your headset through Meta Quest Link, but Meta Quest Link isn't installed on this PC.\n\n" +
+                    "Open Shoal anyway? (It works on the desktop, but Enter VR won't reach the headset.)",
                     Title, MessageBoxButtons.YesNo, MessageBoxIcon.Information);
                 if (answer != DialogResult.Yes) return 0;
             }
+            bool pointAtLink = !IsMetaRuntime(runtime) && linkInstalled;
 
             StartLinkIfNeeded();
 
@@ -52,11 +55,15 @@ static class ShoalLauncher
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Shoal", "Browser");
             Directory.CreateDirectory(profile);
 
+            // A Shoal window that is already open would ignore the runtime choice below, so restart it.
+            CloseRunningShoal(profile);
+
             ProcessStartInfo start = new ProcessStartInfo(browser,
                 "--app=\"" + AppUrl + "\" " +
                 "--user-data-dir=\"" + profile + "\" " +
                 "--no-first-run --no-default-browser-check --window-size=1600,900");
             start.UseShellExecute = false;
+            if (pointAtLink) start.EnvironmentVariables["XR_RUNTIME_JSON"] = MetaRuntime;
             Process.Start(start);
             return 0;
         }
@@ -98,11 +105,41 @@ static class ShoalLauncher
         return Path.GetFileNameWithoutExtension(runtime);
     }
 
+    // Only closes browser processes that use Shoal's own profile folder, never other browsing windows.
+    static void CloseRunningShoal(string profile)
+    {
+        string query = "SELECT ProcessId, CommandLine FROM Win32_Process WHERE Name='msedge.exe' OR Name='chrome.exe'";
+        using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(query))
+        {
+            foreach (ManagementObject proc in searcher.Get())
+            {
+                string cmd = proc["CommandLine"] as string;
+                if (cmd == null || cmd.IndexOf(profile, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                try { Process.GetProcessById(Convert.ToInt32(proc["ProcessId"])).Kill(); } catch { }
+            }
+        }
+        System.Threading.Thread.Sleep(800);   // let the old window release its profile
+    }
+
+    // The Meta Quest Link app runs as oculus-client\Client.exe (OculusClient.exe beside it is an empty stub).
+    // Any problem here is ignored: Shoal still opens, and Link can be started by hand.
     static void StartLinkIfNeeded()
     {
-        if (Process.GetProcessesByName("OculusClient").Length > 0) return;
-        if (!File.Exists(LinkClient)) return;   // Link not installed here: Shoal still opens on the desktop
-        Process.Start(LinkClient);
+        try
+        {
+            if (!File.Exists(LinkClient)) return;
+            string query = "SELECT ExecutablePath FROM Win32_Process WHERE Name='Client.exe'";
+            using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(query))
+            {
+                foreach (ManagementObject proc in searcher.Get())
+                {
+                    string path = proc["ExecutablePath"] as string;
+                    if (path != null && path.IndexOf(@"\oculus-client\", StringComparison.OrdinalIgnoreCase) >= 0) return;
+                }
+            }
+            Process.Start(LinkClient);
+        }
+        catch { }
     }
 
     static string FindBrowser()
