@@ -133,7 +133,7 @@
 
 <aside class="panel" id="panel" aria-label="Shoal controls">
   <div>
-    <h3>Images <output id="countTiles">256 unique</output></h3>
+    <h3>Images <output id="countTiles">256 samples</output></h3>
     <p class="count-read" id="countRead">2,400<small>images</small></p>
     <input type="range" id="count" min="0" max="1000" step="1" aria-label="Number of images">
   </div>
@@ -147,8 +147,10 @@
     <button type="button" class="btn small" id="shuffle">Shuffle</button>
     <button type="button" class="btn small" id="home">Back to start</button>
     <button type="button" class="btn small" id="add">Add photos</button>
-    <button type="button" class="btn small ghost" id="restore" hidden>Use samples</button>
+    <button type="button" class="btn small" id="addFolder">Add folder</button>
+    <button type="button" class="btn small ghost" id="clear" hidden>Clear my photos</button>
     <input type="file" id="file" accept="image/*" multiple hidden>
+    <input type="file" id="folder" webkitdirectory multiple hidden>
   </div>
 </aside>
 
@@ -299,19 +301,37 @@
   camera.rotation.order = 'YXZ';
   rig.add(camera);
 
-  // atlas: 256 cells, each painting stretched to fill its cell; the quad's aspect un-stretches it
-  const atlasCanvas = document.createElement('canvas'); atlasCanvas.width = atlasCanvas.height = ATLAS;
-  const atlasCtx = atlasCanvas.getContext('2d');
-  atlasCtx.fillStyle = BG; atlasCtx.fillRect(0,0,ATLAS,ATLAS);
-  const atlasTex = new THREE.CanvasTexture(atlasCanvas);
-  atlasTex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
-  atlasTex.minFilter = THREE.LinearMipmapLinearFilter;
-  const tiles = [];            // {title, aspect, user, source?} per atlas cell
+  // Atlas pages: 256 cells each, up to 4 pages (1,024 photos). Each photo is stretched into its cell and the
+  // quad's aspect un-stretches it. Pages after the first are only allocated when photos need them.
+  const PAGES = 4, MAX_PHOTOS = TILES*PAGES, ANISO = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+  const pages = [], dirtyPages = new Set();
+  let uniformsReady = false;
+  function atlasPage(p){
+    if (pages[p]) return pages[p];
+    const canvas = document.createElement('canvas'); canvas.width = canvas.height = ATLAS;
+    const ctx = canvas.getContext('2d'); ctx.fillStyle = BG; ctx.fillRect(0, 0, ATLAS, ATLAS);
+    const tex = new THREE.CanvasTexture(canvas); tex.anisotropy = ANISO; tex.minFilter = THREE.LinearMipmapLinearFilter;
+    pages[p] = {canvas, ctx, tex};
+    if (uniformsReady) U['uAtlas' + p].value = tex;
+    return pages[p];
+  }
+  function releasePages(from){
+    for (let p = Math.max(1, from); p < PAGES; p++){
+      if (!pages[p]) continue;
+      pages[p].tex.dispose(); pages[p].canvas.width = pages[p].canvas.height = 1; pages[p] = null;
+      if (uniformsReady) U['uAtlas' + p].value = pages[0].tex;
+    }
+  }
+  function flushPages(){ for (const p of dirtyPages) if (pages[p]) pages[p].tex.needsUpdate = true; dirtyPages.clear(); }
+  atlasPage(0);
+  const tiles = [];            // per atlas cell: {title, aspect, band, user, seed | id, sig, full?}
   let tileCount = TILES;
   function putTile(i, source){
-    const x = (i % GRID)*CELL, y = Math.floor(i/GRID)*CELL;
-    atlasCtx.fillStyle = BG; atlasCtx.fillRect(x, y, CELL, CELL);
-    atlasCtx.drawImage(source, x + GUTTER, y + GUTTER, CELL - 2*GUTTER, CELL - 2*GUTTER);
+    const p = Math.floor(i/TILES), li = i % TILES, pg = atlasPage(p);
+    const x = (li % GRID)*CELL, y = Math.floor(li/GRID)*CELL;
+    pg.ctx.fillStyle = BG; pg.ctx.fillRect(x, y, CELL, CELL);
+    pg.ctx.drawImage(source, x + GUTTER, y + GUTTER, CELL - 2*GUTTER, CELL - 2*GUTTER);
+    dirtyPages.add(p);
   }
 
   const VERT = `
@@ -322,7 +342,7 @@
     uniform float uMix, uStagger, uTime, uSize, uSizeVar, uDrift, uFacing, uWrapOn, uHi, uFogNear, uFogFar, uGrid, uInset, uPulse, uGap;
     uniform vec3 uWrap, uCam, uPopPos;
     uniform float uMem, uMemR, uPopAmp, uPopT, uClock;
-    varying vec2 vUv, vLocal; varying float vFog, vNear, vHi, vStretch, vRipple;
+    varying vec2 vUv, vLocal; varying float vFog, vNear, vHi, vStretch, vRipple, vPage;
     void main(){
       float t = clamp(uMix*(1.0 + uStagger) - aTile.z*uStagger, 0.0, 1.0);
       t = t*t*(3.0 - 2.0*t);
@@ -360,6 +380,8 @@
       }
       vec4 mv = modelViewMatrix*vec4(wp, 1.0);
       float cell = floor(aTile.x + .5);
+      vPage = floor(cell/(uGrid*uGrid));          // which atlas page holds this photo
+      cell -= vPage*uGrid*uGrid;
       vec2 cr = vec2(mod(cell, uGrid), floor(cell/uGrid));
       vec2 cuv = uv;   // tiled cells crop the photo to cover the cell
       if (aDim.x > 0.0){ float ca = aDim.x/aDim.y; cuv = .5 + (uv - .5)*(aTile.y > ca ? vec2(ca/aTile.y, 1.0) : vec2(1.0, aTile.y/ca)); }
@@ -373,10 +395,12 @@
       gl_Position = projectionMatrix*mv;
     }`;
   const FRAG = `
-    uniform sampler2D uAtlas; uniform vec3 uFogColor, uHiColor; uniform float uOpacity, uBlend, uFrame;
-    varying vec2 vUv, vLocal; varying float vFog, vNear, vHi, vStretch, vRipple;
+    uniform sampler2D uAtlas0, uAtlas1, uAtlas2, uAtlas3; uniform vec3 uFogColor, uHiColor; uniform float uOpacity, uBlend, uFrame;
+    varying vec2 vUv, vLocal; varying float vFog, vNear, vHi, vStretch, vRipple, vPage;
     void main(){
-      vec3 c = texture2D(uAtlas, vUv).rgb;
+      float pg = floor(vPage + .5);
+      vec3 c = pg < .5 ? texture2D(uAtlas0, vUv).rgb : pg < 1.5 ? texture2D(uAtlas1, vUv).rgb
+             : pg < 2.5 ? texture2D(uAtlas2, vUv).rgb : texture2D(uAtlas3, vUv).rgb;
       float e = min(min(vLocal.x, 1.0 - vLocal.x), min(vLocal.y, 1.0 - vLocal.y));
       if (vHi > .5 && e < .025) c = uHiColor;
       else if (uFrame > 0.0 && e < .012*uFrame) c = mix(c, vec3(0.9,0.88,0.82), .85);
@@ -396,12 +420,13 @@
     }`;
 
   const U = {
-    uAtlas:{value:atlasTex}, uMix:{value:1}, uStagger:{value:.6}, uTime:{value:0}, uSize:{value:.7}, uSizeVar:{value:.3},
+    uAtlas0:{value:pages[0].tex}, uAtlas1:{value:pages[0].tex}, uAtlas2:{value:pages[0].tex}, uAtlas3:{value:pages[0].tex}, uMix:{value:1}, uStagger:{value:.6}, uTime:{value:0}, uSize:{value:.7}, uSizeVar:{value:.3},
     uDrift:{value:.3}, uFacing:{value:0}, uWrapOn:{value:1}, uWrap:{value:new THREE.Vector3(100,100,100)}, uCam:{value:new THREE.Vector3()},
     uHi:{value:-1}, uFogNear:{value:8}, uFogFar:{value:70}, uGrid:{value:GRID}, uInset:{value:GUTTER/CELL}, uPulse:{value:0}, uGap:{value:0},
     uMem:{value:.9}, uMemR:{value:3.1}, uPopAmp:{value:0}, uPopT:{value:-99}, uClock:{value:0}, uPopPos:{value:new THREE.Vector3()},
     uFogColor:{value:new THREE.Color(BG)}, uHiColor:{value:new THREE.Color('#C9A15B')}, uOpacity:{value:.8}, uBlend:{value:0}, uFrame:{value:0},
   };
+  uniformsReady = true;
   const material = new THREE.ShaderMaterial({uniforms:U, vertexShader:VERT, fragmentShader:FRAG, side:THREE.DoubleSide});
 
   // photos are subdivided so the membrane can bend them; coarser when there are thousands (headset performance)
@@ -787,12 +812,13 @@
     return best < 0 ? null : {index:best, distance:bestT};
   }
 
-  /* ================= tiles: samples & photos ================= */
-  let usingSamples = true, paintJob = 0;
-  const userSources = [];
+  /* ================= tiles: samples & your photos ================= */
+  let usingSamples = true, paintJob = 0, busy = false;
   function paintSamples(){
     const job = ++paintJob; usingSamples = true; tileCount = TILES; bandOrder = [];
+    releasePages(1);
     for (let i = 0; i < TILES; i++){ const info = tileInfo(i + 1); tiles[i] = {title:info.title, aspect:info.aspect, band:PAL.indexOf(info.pal), seed:i + 1, user:false}; }
+    tiles.length = TILES;
     assignTiles();
     let i = 0;
     const step = () => {
@@ -801,46 +827,151 @@
       while (i < TILES && performance.now() - t0 < 12){
         const cw = tiles[i].aspect >= 1 ? CELL : Math.round(CELL*tiles[i].aspect), ch = tiles[i].aspect >= 1 ? Math.round(CELL/tiles[i].aspect) : CELL;
         putTile(i, paintTile(i + 1, cw, ch)); i++;
-        if (i % 24 === 0) atlasTex.needsUpdate = true;
+        if (i % 24 === 0) flushPages();
       }
-      atlasTex.needsUpdate = true;
+      flushPages();
       if (i < TILES) requestAnimationFrame(step);
     };
     step();
-    $('countTiles').textContent = `${TILES} unique`;
+    syncLibraryUI();
   }
 
-  async function loadFiles(list){
-    const files = [...list].filter(f => f.type.startsWith('image/'));
+  // Your photos are kept in this browser's own storage (IndexedDB) on this device: a small copy for the
+  // swarm and a 1,600 px copy for full view. Nothing is uploaded anywhere.
+  const LIB = (() => {
+    let dbp = null;
+    const open = () => dbp || (dbp = new Promise((resolve, reject) => {
+      if (!('indexedDB' in window)) return reject(new Error('IndexedDB unavailable'));
+      const req = indexedDB.open('shoal-library', 1);
+      req.onupgradeneeded = () => req.result.createObjectStore('photos', {keyPath:'id', autoIncrement:true});
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    }));
+    const run = async (mode, fn) => {
+      const db = await open();
+      return new Promise((resolve, reject) => {
+        const t = db.transaction('photos', mode), req = fn(t.objectStore('photos'));
+        t.oncomplete = () => resolve(req ? req.result : undefined);
+        t.onerror = t.onabort = () => reject(t.error);
+      });
+    };
+    return {
+      all:() => run('readonly', st => st.getAll()),
+      get:id => run('readonly', st => st.get(id)),
+      add:rec => run('readwrite', st => st.add(rec)),
+      clear:() => run('readwrite', st => st.clear()),
+    };
+  })();
+  let libraryOK = true;
+  const sigOf = f => `${f.name}|${f.size}|${f.lastModified}`;
+  const titleOf = name => name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim() || 'Untitled';
+  const yieldNow = () => new Promise(r => setTimeout(r, 0));
+  const toJpeg = (c, q) => new Promise((resolve, reject) => c.toBlob(b => b ? resolve(b) : reject(new Error('encode failed')), 'image/jpeg', q));
+  async function decode(blob){
+    if ('createImageBitmap' in window){ try { return await createImageBitmap(blob); } catch (e) {} }
+    const url = URL.createObjectURL(blob);
+    try { const img = new Image(); img.src = url; await img.decode(); return img; } finally { URL.revokeObjectURL(url); }
+  }
+  function scaled(src, max){
+    const w = src.naturalWidth || src.width, h = src.naturalHeight || src.height, k = Math.min(1, max/Math.max(w, h));
+    const c = document.createElement('canvas'); c.width = Math.max(1, Math.round(w*k)); c.height = Math.max(1, Math.round(h*k));
+    const g = c.getContext('2d'); g.imageSmoothingQuality = 'high'; g.drawImage(src, 0, 0, c.width, c.height);
+    return c;
+  }
+  function addTile(meta, drawable){
+    const i = tileCount;
+    putTile(i, drawable);
+    tiles[i] = meta; tileCount = i + 1; tiles.length = tileCount;
+  }
+  function startUserLibrary(){ paintJob++; usingSamples = false; tileCount = 0; tiles.length = 0; releasePages(1); }
+  function syncLibraryUI(){
+    $('countTiles').textContent = usingSamples ? `${TILES} samples` : `${tileCount.toLocaleString('en-US')} of yours`;
+    $('clear').hidden = usingSamples;
+  }
+
+  async function addPhotos(list){
+    if (busy){ toast('Still busy with the last batch. Try again when it finishes.'); return; }
+    const files = [...list].filter(f => f.type.startsWith('image/') || /\.(jpe?g|png|webp|gif|avif|bmp|hei[cf])$/i.test(f.name));
     if (!files.length){ toast('No images found. Choose JPG, PNG, WebP, GIF or AVIF files.'); return; }
-    const room = usingSamples ? TILES : TILES - userSources.length;
-    const take = files.slice(0, Math.max(0, room));
-    if (!take.length){ toast(`The atlas is full at ${TILES} photos. Use “Use samples” to start over.`); return; }
-    toast(`Reading ${take.length} photo${take.length > 1 ? 's' : ''}…`, 60000);
-    if (usingSamples){ paintJob++; userSources.length = 0; }
-    let failed = 0;
-    for (const f of take){
-      const url = URL.createObjectURL(f);
+    busy = true;
+    try {
+      const known = new Set(usingSamples ? [] : tiles.slice(0, tileCount).map(t => t.sig));
+      const fresh = [];
+      for (const f of files){ const sg = sigOf(f); if (!known.has(sg)){ known.add(sg); fresh.push(f); } }
+      const dupes = files.length - fresh.length, room = MAX_PHOTOS - (usingSamples ? 0 : tileCount);
+      const take = fresh.slice(0, Math.max(0, room)), over = fresh.length - take.length;
+      if (!take.length){
+        toast(over ? `Shoal is full at ${MAX_PHOTOS.toLocaleString('en-US')} photos. Clear your photos to start again.` : 'Those photos are already in Shoal.', 5000);
+        return;
+      }
+      const wasSamples = usingSamples;
+      if (wasSamples) startUserLibrary();
+      let added = 0, failed = 0, heic = 0;
+      for (let k = 0; k < take.length; k++){
+        const f = take[k];
+        try {
+          const src = await decode(f);
+          const full = scaled(src, 1600), thumb = scaled(full, CELL);
+          if (src.close) src.close();
+          const [thumbBlob, fullBlob] = await Promise.all([toJpeg(thumb, .85), toJpeg(full, .86)]);
+          const meta = {title:titleOf(f.name), aspect:full.width/full.height, band:averageHue(thumb), user:true, sig:sigOf(f)};
+          if (libraryOK){
+            try { meta.id = await LIB.add({name:f.name, sig:meta.sig, title:meta.title, aspect:meta.aspect, band:meta.band, thumb:thumbBlob, full:fullBlob, added:Date.now()}); }
+            catch (e){ libraryOK = false; }
+          }
+          if (meta.id == null) meta.full = fullBlob;          // this browser won't store it: keep it for this visit only
+          addTile(meta, thumb); added++;
+        } catch (e){ failed++; if (/\.hei[cf]$/i.test(f.name)) heic++; }
+        if ((k + 1) % 8 === 0 || k === take.length - 1){
+          flushPages(); bandOrder = []; assignTiles(); syncLibraryUI();
+          toast(`Adding photos… ${k + 1} of ${take.length}`, 60000);
+          await yieldNow();
+        }
+      }
+      if (!tileCount){ paintSamples(); }
+      bandOrder = [];
+      if (LAYOUTS[P.layout].tiled) rebuild(); else assignTiles();
+      syncLibraryUI();
+      if (added && libraryOK && navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+      const bits = [`${added} photo${added === 1 ? '' : 's'} added · ${tileCount.toLocaleString('en-US')} in Shoal`];
+      if (dupes) bits.push(`${dupes} already here`);
+      if (over) bits.push(`${over} over the ${MAX_PHOTOS.toLocaleString('en-US')} limit`);
+      if (failed) bits.push(heic ? `${failed} couldn’t be read (HEIC isn’t supported; export as JPG)` : `${failed} couldn’t be read`);
+      if (added && !libraryOK) bits.push('this browser won’t keep them after a reload');
+      toast(bits.join(' · '), 7000);
+    } finally { busy = false; }
+  }
+
+  async function restoreLibrary(){
+    let recs;
+    try { recs = await LIB.all(); } catch (e){ libraryOK = false; return; }
+    if (!recs || !recs.length) return;
+    startUserLibrary();
+    toast(`Loading your ${recs.length.toLocaleString('en-US')} photos…`, 60000);
+    let k = 0;
+    for (const r of recs.slice(0, MAX_PHOTOS)){
       try {
-        const img = new Image(); img.src = url; await img.decode();
-        const s = Math.min(1, 1600/Math.max(img.naturalWidth, img.naturalHeight));
-        const c = document.createElement('canvas'); c.width = Math.max(1, Math.round(img.naturalWidth*s)); c.height = Math.max(1, Math.round(img.naturalHeight*s));
-        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-        userSources.push({canvas:c, title:f.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim() || 'Untitled'});
-      } catch (e){ failed++; } finally { URL.revokeObjectURL(url); }
+        const src = await decode(r.thumb);
+        addTile({title:r.title, aspect:r.aspect, band:r.band, user:true, sig:r.sig, id:r.id}, src);
+        if (src.close) src.close();
+      } catch (e) {}
+      if (++k % 32 === 0){ flushPages(); assignTiles(); await yieldNow(); }
     }
-    if (!userSources.length){ toast('Those images couldn’t be read. Try exporting them as JPG or PNG.'); if (usingSamples) paintSamples(); return; }
-    usingSamples = false; tileCount = userSources.length; bandOrder = [];
-    userSources.forEach((u, i) => {
-      putTile(i, u.canvas);
-      const avg = averageHue(u.canvas);
-      tiles[i] = {title:u.title, aspect:u.canvas.width/u.canvas.height, band:avg, user:true, source:u.canvas};
-    });
-    atlasTex.needsUpdate = true;
+    if (!tileCount){ paintSamples(); return; }
+    flushPages(); bandOrder = [];
     if (LAYOUTS[P.layout].tiled) rebuild(); else assignTiles();
-    $('restore').hidden = false; $('countTiles').textContent = `${tileCount} of yours`;
-    const extra = files.length - take.length;
-    toast(`${userSources.length} photo${userSources.length > 1 ? 's' : ''} in the shoal` + (failed ? ` · ${failed} unreadable` : '') + (extra > 0 ? ` · ${extra} over the ${TILES} limit` : ''));
+    syncLibraryUI();
+    toast(`${tileCount.toLocaleString('en-US')} of your photos loaded`);
+  }
+
+  async function clearLibrary(){
+    if (usingSamples || busy) return;
+    const n = tileCount;
+    if (!confirm(`Remove all ${n} of your photos from Shoal on this device?\n\nYour original files aren’t touched. Only Shoal’s copies are deleted.`)) return;
+    try { await LIB.clear(); } catch (e) {}
+    paintSamples();
+    if (LAYOUTS[P.layout].tiled) rebuild();
+    toast(`Removed ${n} photos from Shoal. Showing the samples again.`, 5000);
   }
   function averageHue(c){
     const t = document.createElement('canvas'); t.width = t.height = 8; const g = t.getContext('2d'); g.drawImage(c, 0, 0, 8, 8);
@@ -1021,13 +1152,23 @@
     glide = {index:i, target:tmpV.clone().addScaledVector(dir, -stop).sub(offset), look:tmpV.clone(), aim:true};
     U.uHi.value = i;
   }
-  function openLightbox(i){
+  let lbURL = null;
+  async function openLightbox(i){
     const t = A.aTile.array[i*4] | 0, tile = tiles[t]; if (!tile) return;
-    let src = tile.source;
-    if (!src){ const L = 1200, a = tile.aspect; src = paintTile(tile.seed, a >= 1 ? L : Math.round(L*a), a >= 1 ? Math.round(L/a) : L); }
-    $('lbImg').src = src.toDataURL('image/jpeg', .9); $('lbImg').alt = tile.title;
+    let url;
+    if (tile.user){
+      let blob = tile.full;
+      if (!blob && tile.id != null){ try { const rec = await LIB.get(tile.id); blob = rec && rec.full; } catch (e) {} }
+      if (!blob){ toast('The full-size copy of that photo isn’t available.'); return; }
+      if (lbURL) URL.revokeObjectURL(lbURL);
+      url = lbURL = URL.createObjectURL(blob);
+    } else {
+      const L = 1200, a = tile.aspect;
+      url = paintTile(tile.seed, a >= 1 ? L : Math.round(L*a), a >= 1 ? Math.round(L/a) : L).toDataURL('image/jpeg', .9);
+    }
+    $('lbImg').src = url; $('lbImg').alt = tile.title;
     $('lbTitle').textContent = tile.title;
-    $('lbMeta').textContent = `Image ${(i + 1).toLocaleString('en-US')} of ${N.toLocaleString('en-US')} · atlas cell ${pad3(t)} · ${tile.user ? 'your photo' : 'sample'}`;
+    $('lbMeta').textContent = `Image ${(i + 1).toLocaleString('en-US')} of ${N.toLocaleString('en-US')} · ${tile.user ? `your photo ${t + 1} of ${tileCount}` : 'sample'}`;
     lb.hidden = false; $('lbClose').focus();
   }
   $('lbClose').addEventListener('click', () => { lb.hidden = true; });
@@ -1266,8 +1407,9 @@
   $('shuffle').addEventListener('click', shuffle);
   $('home').addEventListener('click', goHome);
   $('add').addEventListener('click', () => $('file').click());
-  $('file').addEventListener('change', () => { const f = $('file'); if (f.files.length) loadFiles(f.files); f.value = ''; });
-  $('restore').addEventListener('click', () => { userSources.length = 0; $('restore').hidden = true; paintSamples(); toast('Sample images restored'); });
+  $('addFolder').addEventListener('click', () => $('folder').click());
+  for (const id of ['file', 'folder']) $(id).addEventListener('change', () => { const f = $(id); if (f.files.length) addPhotos(f.files); f.value = ''; });
+  $('clear').addEventListener('click', clearLibrary);
   $('tune').addEventListener('click', () => {
     const open = $('panel').classList.toggle('collapsed') === false;
     $('tune').setAttribute('aria-expanded', open); document.body.classList.toggle('sheet-open', open);
@@ -1278,7 +1420,7 @@
   addEventListener('dragenter', e => { if (!hasFiles(e)) return; dragDepth++; dropEl.hidden = false; });
   addEventListener('dragleave', e => { if (!hasFiles(e)) return; if (--dragDepth <= 0){ dragDepth = 0; dropEl.hidden = true; } });
   addEventListener('dragover', e => { if (hasFiles(e)) e.preventDefault(); });
-  addEventListener('drop', e => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth = 0; dropEl.hidden = true; loadFiles(e.dataTransfer.files); });
+  addEventListener('drop', e => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth = 0; dropEl.hidden = true; addPhotos(e.dataTransfer.files); });
 
   function onResize(){
     if (renderer.xr.isPresenting) return;
@@ -1294,6 +1436,7 @@
   paintSamples();
   syncAll();
   rebuild();
+  busy = true; restoreLibrary().finally(() => { busy = false; });   // bring back photos saved on this device
   if (matchMedia('(max-width:760px)').matches) $('panel').classList.add('collapsed');
   renderer.setAnimationLoop(loop);
 })();
