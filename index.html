@@ -118,7 +118,7 @@
     .brand{top:16px;left:16px}
     .wordmark{font-size:28px}
     .sub{display:none}
-    .top-actions{top:12px;right:12px}
+    .top-actions{top:12px;right:12px;flex-wrap:wrap;justify-content:flex-end;max-width:calc(100vw - 132px)}
     .tune{display:inline-block}
     .panel{top:auto;bottom:0;left:0;right:0;width:auto;max-height:58vh;border-radius:3px 3px 0 0;border-width:1px 0 0}
     .panel.collapsed{display:none}
@@ -134,6 +134,7 @@
 <div class="brand"><span class="wordmark">Shoal</span><span class="sub">Swim through images · WebXR</span></div>
 
 <div class="top-actions">
+  <button type="button" class="btn vr" id="install" hidden>Install</button>
   <button type="button" class="btn" id="motion" aria-pressed="false" hidden>Look around</button>
   <button type="button" class="btn tune" id="tune" aria-expanded="false" aria-controls="panel">Tune</button>
   <button type="button" class="btn vr" id="vr">Enter VR</button>
@@ -1576,6 +1577,22 @@
   }
   if (coarse && 'DeviceOrientationEvent' in window){ motionBtn.hidden = false; motionBtn.addEventListener('click', () => setMotion(!motion.on)); }
   if (coarse) swimpad.hidden = false;
+
+  // Android (Chrome, Edge, Samsung Internet): offer to install Shoal as an app when the browser says it can
+  const installBtn = $('install');
+  let installPrompt = null;
+  addEventListener('beforeinstallprompt', e => { e.preventDefault(); installPrompt = e; installBtn.hidden = false; });
+  installBtn.addEventListener('click', async () => {
+    if (!installPrompt) return;
+    const prompt = installPrompt;
+    installPrompt = null;
+    installBtn.hidden = true;
+    prompt.prompt();
+    let choice = null;
+    try { choice = await prompt.userChoice; } catch (e) {}
+    toast(choice && choice.outcome === 'accepted' ? 'Shoal is being added to your home screen' : 'You can install Shoal any time from the browser menu', 4000);
+  });
+  addEventListener('appinstalled', () => { installPrompt = null; installBtn.hidden = true; });
 
   let swimHold = 0;
   for (const [id, dir] of [['swimFwd', 1], ['swimBack', -1]]){
