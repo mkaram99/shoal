@@ -751,11 +751,16 @@
     morphStart = performance.now();
   }
 
-  let bandOrder = [];
+  let bandOrder = [], bandOrderKey = '';
   function assignTiles(count = N){
     const TL = A.aTile.array, n = Math.max(1, tileCount);
-    if (P.order === 'bands' && bandOrder.length !== n){
-      bandOrder = [...Array(n).keys()].sort((x, y) => (tiles[x].band - tiles[y].band) || (x - y));
+    // 'bands' and 'name' deal the images in a sorted order, kept until the setting or the count changes
+    const sorted = P.order === 'bands' || P.order === 'name';
+    if (sorted && (bandOrder.length !== n || bandOrderKey !== P.order)){
+      bandOrderKey = P.order;
+      bandOrder = [...Array(n).keys()].sort(P.order === 'bands'
+        ? (x, y) => (tiles[x].band - tiles[y].band) || (x - y)
+        : (x, y) => String(tiles[x] && tiles[x].title || '').localeCompare(String(tiles[y] && tiles[y].title || ''), undefined, {numeric:true, sensitivity:'base'}) || (x - y));
     }
     // "random" deals shuffled decks: every image repeats equally often and a copy never follows itself
     let deck = null;
@@ -1021,7 +1026,7 @@
       {key:'gap', label:'Gap', min:0, max:.5, step:.01, fmt:v => v < .005 ? 'touching' : pct(v), uniform:'uGap'},
       {key:'shells', label:'Shells', min:1, max:6, step:1, fmt:v => v === 1 ? '1 layer' : v + ' layers', rebuild:true},
       {key:'facing', label:'Facing', min:0, max:1, step:.01, fmt:v => v < .02 ? 'toward you' : v > .98 ? 'along the shape' : pct(v) + ' shape', uniform:'uFacing'},
-      {key:'order', label:'Order', chips:[['random','Random'],['bands','Colour bands'],['sequence','Sequence'],['echo','Echo']], apply:() => assignTiles()},
+      {key:'order', label:'Order', chips:[['random','Random'],['bands','Colour bands'],['name','Name'],['sequence','Sequence'],['echo','Echo']], apply:() => assignTiles()},
     ]},
     {title:'Effects', items:[
       {key:'blend', label:'Blending', chips:[['solid','Solid'],['ghost','Ghost'],['glow','Glow'],['screen','Screen']], apply:() => { applyBlend(P.blend); syncDisabled(); }},
