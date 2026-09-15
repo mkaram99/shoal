@@ -1,6 +1,7 @@
 // Shoal offline cache: the page shell is network-first (so updates appear),
 // the 3D engine and fonts are cache-first (so it opens without a connection).
-const CACHE = 'shoal-v1';
+// The shell always asks the server (never the browser's HTTP cache), so a new version shows up on the next visit.
+const CACHE = 'shoal-v2';
 const SHELL = ['./', './index.html', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png'];
 const CDN_HOSTS = ['cdnjs.cloudflare.com', 'fonts.googleapis.com', 'fonts.gstatic.com'];
 
@@ -23,7 +24,7 @@ self.addEventListener('fetch', event => {
 
   if (url.origin === self.location.origin){
     event.respondWith(
-      fetch(req)
+      fetch(new Request(req.url, {cache: 'no-cache', credentials: 'same-origin'}))
         .then(res => { const copy = res.clone(); caches.open(CACHE).then(c => c.put(req, copy)); return res; })
         .catch(() => caches.match(req).then(hit => hit || caches.match('./index.html')))
     );
