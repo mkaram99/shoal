@@ -107,6 +107,13 @@
   .drop{position:fixed;inset:14px;z-index:40;display:grid;place-items:center;border:1px dashed var(--brass);background:rgba(5,8,11,.88);pointer-events:none}
   .drop p{margin:0;font:italic 400 clamp(24px,3vw,40px)/1.2 var(--serif);text-align:center;padding:0 24px}
 
+  .swimpad{position:fixed;right:16px;bottom:16px;z-index:6;display:flex;flex-direction:column;gap:10px}
+  .swimpad button{width:64px;height:64px;border-radius:50%;border:1px solid rgba(201,161,91,.7);background:var(--panel);-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);
+    color:var(--paper);font:600 12px/1 var(--sans);cursor:pointer;touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+  .swimpad button.on{background:var(--brass);border-color:var(--brass);color:#14100A}
+  .btn[aria-pressed="true"]{border-color:var(--brass);color:var(--brass)}
+  body.sheet-open .swimpad{display:none}
+
   @media (max-width:760px){
     .brand{top:16px;left:16px}
     .wordmark{font-size:28px}
@@ -127,6 +134,7 @@
 <div class="brand"><span class="wordmark">Shoal</span><span class="sub">Swim through images · WebXR</span></div>
 
 <div class="top-actions">
+  <button type="button" class="btn" id="motion" aria-pressed="false" hidden>Look around</button>
   <button type="button" class="btn tune" id="tune" aria-expanded="false" aria-controls="panel">Tune</button>
   <button type="button" class="btn vr" id="vr">Enter VR</button>
 </div>
@@ -158,6 +166,10 @@
   <div><div class="k">Swum</div><div class="v" id="odo">0.0<b> m</b></div></div>
   <div><div class="k">Heading</div><div class="v" id="heading">000<b>°</b></div></div>
   <div><div class="k">Depth</div><div class="v" id="depth">0.0<b> m</b></div></div>
+</div>
+<div class="swimpad" id="swimpad" hidden>
+  <button type="button" id="swimFwd" aria-label="Hold to swim forward">Swim</button>
+  <button type="button" id="swimBack" aria-label="Hold to swim back">Back</button>
 </div>
 <p class="hint">Drag to look · W A S D swim · Q E sink/rise · V enter VR · 1–9 0 - = shapes · click an image to glide to it<br><span>In VR</span> hold trigger to swim where you point · stick moves · grip next shape · A/X cruise</p>
 
@@ -1414,7 +1426,8 @@
         look.yaw += (((ty - look.yaw) % 360 + 540) % 360 - 180)*k;
         look.pitch += (tp - look.pitch)*k;
       }
-      camera.rotation.set(look.pitch*DEG, look.yaw*DEG, 0);
+      if (motion.on && motion.have) motionApply();
+      else camera.rotation.set(look.pitch*DEG, look.yaw*DEG, 0);
     }
     camera.getWorldDirection(fwd);
     right.crossVectors(fwd, UP).normalize();
@@ -1428,6 +1441,7 @@
     if (on('e')) wish.y += 1;
     if (on('q')) wish.y -= 1;
     if (wish.lengthSq() > 0){ wish.normalize().multiplyScalar(keys.has('shift') ? 10 : 3.5); glide = null; }
+    if (swimHold){ wish.addScaledVector(fwd, swimHold*3); glide = null; }
     if (xr) pollXR();
 
     if (glide){
@@ -1481,6 +1495,7 @@
     if (drag && e.pointerId === drag.id){
       const dx = e.clientX - drag.lx, dy = e.clientY - drag.ly;
       drag.lx = e.clientX; drag.ly = e.clientY; drag.moved += Math.abs(dx) + Math.abs(dy);
+      if (motion.on && motion.have) motion.offset = (motion.offset || 0) + dx*.18*DEG;
       look.yaw += dx*.18; look.pitch = clamp(look.pitch + dy*.18, -88, 88);
       if (glide && drag.moved > 6) glide.aim = false;
     } else if (e.pointerType === 'mouse' && !glide && performance.now() - lastHover > 90){
@@ -1506,6 +1521,70 @@
     camera.getWorldDirection(fwd);
     vel.addScaledVector(fwd, -e.deltaY*(e.deltaMode === 1 ? .3 : .012));
   }, {passive:false});
+
+  /* ---------- phone: move the phone to look around, hold a button to swim ---------- */
+  const coarse = matchMedia('(pointer: coarse)').matches;
+  const motionBtn = $('motion'), swimpad = $('swimpad');
+  const motion = {on:false, have:false, alpha:0, beta:0, gamma:0, offset:null, timer:0};
+  const devQ = new THREE.Quaternion(), devEuler = new THREE.Euler(), zAxis = new THREE.Vector3(0,0,1), yAxis = new THREE.Vector3(0,1,0);
+  const screenTilt = new THREE.Quaternion(-Math.sqrt(.5), 0, 0, Math.sqrt(.5)), turnQ = new THREE.Quaternion(), rollQ = new THREE.Quaternion();
+  function onOrientation(e){
+    if (e.alpha == null && e.beta == null && e.gamma == null) return;
+    motion.alpha = (e.alpha || 0)*DEG; motion.beta = (e.beta || 0)*DEG; motion.gamma = (e.gamma || 0)*DEG;
+    motion.have = true;
+  }
+  // the phone's orientation as a camera looking out of its screen (as three.js DeviceOrientationControls does)
+  function motionApply(){
+    const orient = ((screen.orientation && screen.orientation.angle) || window.orientation || 0)*DEG;
+    devEuler.set(motion.beta, motion.alpha, -motion.gamma, 'YXZ');
+    devQ.setFromEuler(devEuler).multiply(screenTilt).multiply(rollQ.setFromAxisAngle(zAxis, -orient));
+    if (motion.offset === null){   // keep facing the way you were when motion control started
+      devEuler.setFromQuaternion(devQ, 'YXZ');
+      motion.offset = look.yaw*DEG - devEuler.y;
+    }
+    camera.quaternion.copy(turnQ.setFromAxisAngle(yAxis, motion.offset)).multiply(devQ);
+  }
+  async function setMotion(on){
+    if (on){
+      // iPhone and iPad ask for permission, and only from a tap. Other browsers can answer oddly, so listen either way
+      // and let the data (or its absence) decide.
+      let permission = 'granted';
+      if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function'){
+        try { permission = await DeviceOrientationEvent.requestPermission(); } catch (e){ permission = 'unknown'; }
+      }
+      motion.on = true; motion.have = false; motion.offset = null;
+      addEventListener('deviceorientation', onOrientation);
+      clearTimeout(motion.timer);
+      motion.timer = setTimeout(() => {
+        if (!motion.on || motion.have) return;
+        setMotion(false);
+        toast(permission === 'granted' ? 'This device isn\u2019t sending motion data, so drag to look instead.'
+          : 'No motion data. Allow motion access for this site (on iPhone: Settings \u203a Safari \u203a Motion & Orientation Access), then tap Look around again.', 7000);
+      }, 2000);
+      toast('Move your phone to look around \u00b7 drag sideways to turn', 4000);
+    } else {
+      if (motion.on && motion.have){   // carry on from the view the phone was showing
+        devEuler.setFromQuaternion(camera.quaternion, 'YXZ');
+        look.yaw = devEuler.y/DEG; look.pitch = clamp(devEuler.x/DEG, -88, 88);
+      }
+      motion.on = false;
+      removeEventListener('deviceorientation', onOrientation);
+      clearTimeout(motion.timer);
+    }
+    motionBtn.setAttribute('aria-pressed', motion.on);
+    motionBtn.textContent = motion.on ? 'Motion on' : 'Look around';
+  }
+  if (coarse && 'DeviceOrientationEvent' in window){ motionBtn.hidden = false; motionBtn.addEventListener('click', () => setMotion(!motion.on)); }
+  if (coarse) swimpad.hidden = false;
+
+  let swimHold = 0;
+  for (const [id, dir] of [['swimFwd', 1], ['swimBack', -1]]){
+    const b = $(id);
+    b.addEventListener('pointerdown', e => { e.preventDefault(); swimHold = dir; b.classList.add('on'); try { b.setPointerCapture(e.pointerId); } catch (err) {} });
+    const stop = () => { if (swimHold === dir) swimHold = 0; b.classList.remove('on'); };
+    for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) b.addEventListener(ev, stop);
+    b.addEventListener('contextmenu', e => e.preventDefault());
+  }
 
   const LAYOUT_KEYS = Object.keys(LAYOUTS);
   addEventListener('keydown', e => {
