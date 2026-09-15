@@ -135,6 +135,7 @@
 
 <div class="top-actions">
   <button type="button" class="btn vr" id="install" hidden>Install</button>
+  <button type="button" class="btn" id="addTop" hidden>Add photos</button>
   <button type="button" class="btn" id="motion" aria-pressed="false" hidden>Look around</button>
   <button type="button" class="btn tune" id="tune" aria-expanded="false" aria-controls="panel">Tune</button>
   <button type="button" class="btn vr" id="vr">Enter VR</button>
@@ -1625,6 +1626,9 @@
   $('shuffle').addEventListener('click', shuffle);
   $('home').addEventListener('click', goHome);
   $('add').addEventListener('click', () => $('file').click());
+  // phones start with the panel closed, so Add photos also sits in the top bar there
+  if (coarse || matchMedia('(max-width:760px)').matches){ $('addTop').hidden = false; }
+  $('addTop').addEventListener('click', () => $('file').click());
   $('addFolder').addEventListener('click', () => $('folder').click());
   for (const id of ['file', 'folder']) $(id).addEventListener('change', () => { const f = $(id); if (f.files.length) addPhotos(f.files); f.value = ''; });
   $('clear').addEventListener('click', clearLibrary);
