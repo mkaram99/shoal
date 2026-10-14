@@ -972,7 +972,14 @@
       if (added && !libraryOK) bits.push('this browser won’t keep them after a reload');
       // phone pickers choose one photo at a time until you long-press
       if (coarse && files.length === 1) bits.push('To add several at once, long-press a photo in the picker, then tap the others');
-      toast(bits.join(' · '), coarse && files.length === 1 ? 9000 : 7000);
+      // A phone's picker caps one selection — 500 on Android — and it neither says so nor lets the page
+      // ask. So "Select all" quietly hands over as many as it will carry, and there is no way to tell that
+      // from someone choosing exactly that many. After a big batch, say that picking again adds more:
+      // true either way, since Add appends and skips anything already here.
+      const roomLeft = MAX_PHOTOS - tileCount, BIG_BATCH = 50;
+      const capped = coarse && !over && files.length >= BIG_BATCH && roomLeft > 0;
+      if (capped) bits.push(`your phone limits one selection · tap Add again for up to ${roomLeft.toLocaleString('en-US')} more`);
+      toast(bits.join(' · '), (coarse && files.length === 1) || capped ? 9000 : 7000);
     } finally { busy = false; }
   }
 
