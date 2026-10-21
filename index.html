@@ -114,7 +114,10 @@
   .btn[aria-pressed="true"]{border-color:var(--brass);color:var(--brass)}
   body.sheet-open .swimpad{display:none}
 
-  @media (max-width:760px){
+  /* The touch layout: a Tune button and the panel as a bottom sheet. Asked of the pointer, not the
+     screen, because a tablet is wider than any phone breakpoint while still being all fingers.
+     The width is kept as a second answer, so dragging a desktop window narrow still shows it. */
+  @media (pointer: coarse), (max-width:760px){
     .brand{top:16px;left:16px}
     .wordmark{font-size:28px}
     .sub{display:none}
@@ -1542,6 +1545,8 @@
 
   /* ---------- phone: move the phone to look around, hold a button to swim ---------- */
   const coarse = matchMedia('(pointer: coarse)').matches;
+  // the same question the touch layout's media query asks, so the two cannot disagree
+  const touchUI = coarse || matchMedia('(max-width:760px)').matches;
   const motionBtn = $('motion'), swimpad = $('swimpad');
   const motion = {on:false, have:false, alpha:0, beta:0, gamma:0, offset:null, timer:0};
   const devQ = new THREE.Quaternion(), devEuler = new THREE.Euler(), zAxis = new THREE.Vector3(0,0,1), yAxis = new THREE.Vector3(0,1,0);
@@ -1643,7 +1648,7 @@
   $('home').addEventListener('click', goHome);
   $('add').addEventListener('click', () => $('file').click());
   // phones start with the panel closed, so Add photos also sits in the top bar there
-  if (coarse || matchMedia('(max-width:760px)').matches){ $('addTop').hidden = false; }
+  if (touchUI){ $('addTop').hidden = false; }
   $('addTop').addEventListener('click', () => $('file').click());
   $('addFolder').addEventListener('click', () => $('folder').click());
   for (const id of ['file', 'folder']) $(id).addEventListener('change', () => { const f = $(id); if (f.files.length) addPhotos(f.files); f.value = ''; });
@@ -1675,7 +1680,7 @@
   syncAll();
   rebuild();
   busy = true; restoreLibrary().finally(() => { busy = false; });   // bring back photos saved on this device
-  if (matchMedia('(max-width:760px)').matches) $('panel').classList.add('collapsed');
+  if (touchUI) $('panel').classList.add('collapsed');
   renderer.setAnimationLoop(loop);
 })();
 </script>
