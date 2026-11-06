@@ -2,7 +2,7 @@
   "name": "Shoal",
   "short_name": "Shoal",
   "description": "Swim through thousands of images in VR and tune their count, geometry, blending and motion.",
-  "id": "./",
+  "id": "/shoal/",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
