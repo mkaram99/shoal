@@ -920,11 +920,71 @@
   }
   function startUserLibrary(){ paintJob++; usingSamples = false; tileCount = 0; tiles.length = 0; releasePages(1); hdReset(); }
   function syncLibraryUI(){
-    $('countTiles').textContent = usingSamples ? `${TILES} samples` : `${tileCount.toLocaleString('en-US')} of yours`;
-    $('clear').hidden = usingSamples;
+    $('countTiles').textContent = feedName != null ? feedName
+      : usingSamples ? `${TILES} samples` : `${tileCount.toLocaleString('en-US')} of yours`;
+    $('clear').hidden = usingSamples || feedName != null;   // a feed is nobody's to clear
+  }
+
+  // A live view of photographs served by something else on this same machine: opened as
+  // /shoal/?feed=/some/path, Shoal shows what that path lists instead of your own library, and nothing
+  // is imported, written or kept. Reloading without ?feed= gives your own photos back.
+  let feedName = null;
+
+  // Only a path on this very origin. One slash, and the next character neither a slash nor a backslash:
+  // browsers read /\host as //host for http and https, which would leave the origin, and the same test
+  // rules out every scheme. So the copy on the open web cannot be aimed anywhere.
+  function feedPath(){
+    const v = new URLSearchParams(location.search).get('feed');
+    return v && /^\/[^/\\]/.test(v) ? v : null;
+  }
+
+  async function showFeed(path){
+    let data;
+    try {
+      const r = await fetch(path, {cache:'no-store'});
+      if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+      data = await r.json();
+    } catch (e){ toast(`Couldn’t read that feed: ${e.message}`, 6000); return; }   // leave what is showing
+    const all = Array.isArray(data && data.items) ? data.items : [];
+    if (!all.length){ toast('That feed lists no photos.', 5000); return; }
+    const items = all.slice(0, MAX_PHOTOS), over = all.length - items.length;
+    busy = true;
+    try {
+      startUserLibrary();
+      feedName = data.name || 'A feed';
+      let added = 0, failed = 0;
+      for (let k = 0; k < items.length; k++){
+        const it = items[k];
+        try {
+          const res = await fetch(it.src, {cache:'no-store'});
+          if (!res.ok) throw new Error('not served');
+          const src = await decode(await res.blob());
+          const aspect = +it.aspect > 0 ? +it.aspect : src.width / src.height;
+          const thumb = scaled(src, CELL);
+          if (src.close) src.close();
+          addTile({title:it.title || '', aspect, band:averageHue(thumb), user:true, feed:true, fullURL:it.full}, thumb);
+          added++;
+        } catch (e){ failed++; }
+        if ((k + 1) % 8 === 0 || k === items.length - 1){
+          flushPages(); bandOrder = []; assignTiles(); syncLibraryUI();
+          toast(`Showing ${feedName}… ${k + 1} of ${items.length}`, 60000);
+          await yieldNow();
+        }
+      }
+      if (!tileCount){ feedName = null; paintSamples(); }
+      bandOrder = [];
+      if (LAYOUTS[P.layout].tiled) rebuild(); else assignTiles();
+      syncLibraryUI();
+      const bits = [`${added} photo${added === 1 ? '' : 's'} from ${data.name || 'the feed'}`];
+      if (over) bits.push(`${over} over the ${MAX_PHOTOS.toLocaleString('en-US')} limit`);
+      if (failed) bits.push(`${failed} couldn’t be read`);
+      bits.push('reload without ?feed= for your own photos');
+      toast(bits.join(' · '), 7000);
+    } finally { busy = false; }
   }
 
   async function addPhotos(list){
+    if (feedName != null){ toast('Reload the page without ?feed= to go back to your own photos.', 6000); return; }
     if (busy){ toast('Still busy with the last batch. Try again when it finishes.'); return; }
     const files = [...list].filter(f => f.type.startsWith('image/') || /\.(jpe?g|png|webp|gif|avif|bmp|hei[cf])$/i.test(f.name));
     if (!files.length){ toast('No images found. Choose JPG, PNG, WebP, GIF or AVIF files.'); return; }
@@ -1201,7 +1261,10 @@
   async function openLightbox(i){
     const t = A.aTile.array[i*4] | 0, tile = tiles[t]; if (!tile) return;
     let url;
-    if (tile.user){
+    if (tile.feed){
+      if (!tile.fullURL){ toast('The full-size copy of that photo isn’t available.'); return; }
+      url = tile.fullURL;                       // served by whatever gave us the feed; nothing to make or free
+    } else if (tile.user){
       let blob = tile.full;
       if (!blob && tile.id != null){ try { const rec = await LIB.get(tile.id); blob = rec && rec.full; } catch (e) {} }
       if (!blob){ toast('The full-size copy of that photo isn’t available.'); return; }
@@ -1373,6 +1436,9 @@
       return paintTile(tile.seed, a >= 1 ? L : Math.round(L*a), a >= 1 ? Math.round(L/a) : L);
     }
     let blob = tile.full;
+    if (!blob && tile.feed && tile.fullURL){
+      try { const r = await fetch(tile.fullURL); if (r.ok) blob = await r.blob(); } catch (e) {}
+    }
     if (!blob && tile.id != null){ const rec = await LIB.get(tile.id); blob = rec && rec.full; }
     return blob ? decode(blob) : null;
   }
@@ -1679,7 +1745,8 @@
   paintSamples();
   syncAll();
   rebuild();
-  busy = true; restoreLibrary().finally(() => { busy = false; });   // bring back photos saved on this device
+  // bring back photos saved on this device, then, if this was opened as a feed, show that instead
+  busy = true; restoreLibrary().finally(() => { busy = false; const f = feedPath(); if (f) showFeed(f); });
   if (touchUI) $('panel').classList.add('collapsed');
   renderer.setAnimationLoop(loop);
 })();
